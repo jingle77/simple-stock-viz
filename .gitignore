@@ -1,0 +1,36 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Distributions / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Environment / secrets ---
+.env
+.env.*
+!env.sample
+
+# --- Streamlit / cache ---
+.streamlit/
+**/.ipynb_checkpoints
+
+# --- VS Code / editor stuff ---
+.vscode/
+*.code-workspace
+git add .
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
