@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, date
 from typing import Optional
+import numpy as np
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -332,15 +333,12 @@ def build_price_and_events_chart(
     **_: dict,
 ) -> go.Figure:
     """
-    Dual-axis price chart: stock vs S&P 500.
+    Dual-axis *indexed* price chart: stock vs S&P 500, but axes labeled in actual prices.
 
-    - Left y-axis: stock adjusted close (symbol).
-    - Right y-axis: S&P 500 adjusted close.
-    - Earnings markers: EPS estimate / actual / difference (Δ) shown as
-      labels near the price line. Difference is color-coded:
-        * green if actual > estimate
-        * red if actual < estimate
-        * neutral if equal or estimates missing
+    - Both series are rebased to 100 at the first common date in the data window.
+    - Left y-axis: labeled in stock PRICE (but underlying data is indexed).
+    - Right y-axis: labeled in S&P 500 PRICE (underlying data also indexed).
+    - Earnings markers: EPS estimate / actual / Δ near the (indexed) price line.
     - Dividend markers: '$<amount>' labels, larger, dark text.
     """
     # --- Prep price data ---
@@ -356,13 +354,33 @@ def build_price_and_events_chart(
     if "adjClose" not in stock.columns or "adjClose" not in spx.columns:
         raise ValueError("Expected 'adjClose' column in both stock and sp500 dataframes.")
 
+    # ------------------------------------------------------
+    # Rebase both series to 100 at the first common date
+    # ------------------------------------------------------
+    common_dates = sorted(set(stock["date"]).intersection(set(spx["date"])))
+    if not common_dates:
+        raise ValueError("No overlapping dates between stock and S&P 500 series.")
+
+    base_date = common_dates[0]
+
+    # Restrict both series to dates >= base_date (so both start together)
+    stock = stock[stock["date"] >= base_date].copy()
+    spx = spx[spx["date"] >= base_date].copy()
+
+    # Get base values on the base_date
+    stock_base = float(stock.loc[stock["date"] == base_date, "adjClose"].iloc[0])
+    spx_base = float(spx.loc[spx["date"] == base_date, "adjClose"].iloc[0])
+
+    stock["indexed"] = stock["adjClose"] / stock_base * 100.0
+    spx["indexed"] = spx["adjClose"] / spx_base * 100.0
+
     fig = go.Figure()
 
-    # --- Stock trace (left axis) ---
+    # --- Stock trace (left axis, indexed) ---
     fig.add_trace(
         go.Scatter(
             x=stock["date"],
-            y=stock["adjClose"],
+            y=stock["indexed"],
             mode="lines",
             name=symbol,
             hovertemplate=f"{symbol}: %{{y:.2f}}<extra></extra>",
@@ -370,11 +388,11 @@ def build_price_and_events_chart(
         )
     )
 
-    # --- S&P 500 trace (right axis) ---
+    # --- S&P 500 trace (right axis, indexed) ---
     fig.add_trace(
         go.Scatter(
             x=spx["date"],
-            y=spx["adjClose"],
+            y=spx["indexed"],
             mode="lines",
             name="S&P 500",
             line=dict(dash="dot"),
@@ -385,7 +403,6 @@ def build_price_and_events_chart(
 
     # --- Vertical analysis-date line as a shape (does NOT affect y-scale) ---
     as_of_ts = pd.to_datetime(as_of_date)
-
     fig.add_shape(
         type="line",
         x0=as_of_ts,
@@ -400,8 +417,8 @@ def build_price_and_events_chart(
     # ------------------------------------------------------------------
     # Earnings & dividends markers (if data is provided)
     # ------------------------------------------------------------------
-    # Attach events to the stock price series so labels sit on/near price line.
-    stock_for_merge = stock[["date", "adjClose"]].rename(columns={"adjClose": "price"})
+    # Attach events to the *indexed* stock series so labels sit on/near the line.
+    stock_for_merge = stock[["date", "indexed"]].rename(columns={"indexed": "price"})
     stock_for_merge = stock_for_merge.sort_values("date")
 
     # Colors
@@ -435,7 +452,7 @@ def build_price_and_events_chart(
                 hovertemplate=(
                     "Earnings<br>"
                     "Date: %{x|%Y-%m-%d}<br>"
-                    "Price: %{y:.2f}<extra></extra>"
+                    "Indexed level: %{y:.2f}<extra></extra>"
                 ),
                 yaxis="y",
             )
@@ -525,23 +542,49 @@ def build_price_and_events_chart(
                 hovertemplate=(
                     "Dividend<br>"
                     "Date: %{x|%Y-%m-%d}<br>"
-                    "Price: %{y:.2f}<extra></extra>"
+                    "Indexed level: %{y:.2f}<extra></extra>"
                 ),
                 yaxis="y",
             )
         )
 
     # ------------------------------------------------------------------
-    # Layout: dual y-axes, NO title, bigger legend
+    # Layout: dual y-axes, shared indexed range, but price-based tick labels
     # ------------------------------------------------------------------
+    # Compute a shared range in *indexed* space so both series line up
+    all_indexed_vals = pd.concat(
+        [stock["indexed"], spx["indexed"]], axis=0, ignore_index=True
+    )
+    ymin = float(all_indexed_vals.min())
+    ymax = float(all_indexed_vals.max())
+    pad = (ymax - ymin) * 0.05 if ymax > ymin else 5.0
+    yrange = [ymin - pad, ymax + pad]
+
+    # Choose some common tick positions in indexed space
+    tickvals = [float(v) for v in np.linspace(yrange[0], yrange[1], 6)]
+
+    # Map those ticks back to actual prices for each axis
+    stock_ticktext = [f"{stock_base * tv / 100.0:.2f}" for tv in tickvals]
+    spx_ticktext = [f"{spx_base * tv / 100.0:.2f}" for tv in tickvals]
+
     fig.update_layout(
         xaxis=dict(title="Date"),
-        yaxis=dict(title=symbol),  # left axis = stock
+        yaxis=dict(
+            title=symbol,  # left axis = stock, no "indexed" suffix
+            range=yrange,
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=stock_ticktext,
+        ),
         yaxis2=dict(
             title="S&P 500",
             overlaying="y",
             side="right",
             showgrid=False,
+            range=yrange,
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=spx_ticktext,
         ),
         legend=dict(
             orientation="h",
@@ -557,7 +600,6 @@ def build_price_and_events_chart(
 
     # Intentionally no chart title; Streamlit heading provides the context.
     return fig
-
 
 # -------------------------------
 # Streamlit app layout & logic
